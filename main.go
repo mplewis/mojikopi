@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -60,8 +62,6 @@ func buildListener(cfg Config) func(s *discordgo.Session, m *discordgo.MessageCr
 			return
 		}
 
-		fmt.Println("Received a message")
-		fmt.Println(m.Content)
 		emojis := m.GetCustomEmojis()
 		if len(emojis) == 0 {
 			s.ChannelMessageSend(m.ChannelID, "Sorry, I didn't find any custom emojis in your message.")
@@ -69,21 +69,34 @@ func buildListener(cfg Config) func(s *discordgo.Session, m *discordgo.MessageCr
 		}
 		for _, emoji := range emojis {
 			fmt.Println(emoji)
+			e, err := copyEmojiByID(s, m.GuildID, emoji.ID, emoji.Name)
+			if err != nil {
+				fmt.Println(err)
+				s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Sorry, I couldn't copy `%s`:\n```\n%s\n```", emoji.Name, err))
+				continue
+			}
+			s.ChannelMessageSend(m.ChannelID, fmt.Sprintf("Copied `%s` to this server: <:%s:%s>", emoji.Name, e.Name, e.ID))
 		}
 	}
 	return listen
 }
 
-func copyEmojiByID(s *discordgo.Session, id string, name string) (string, error) {
+func copyEmojiByID(s *discordgo.Session, guildID string, id string, name string) (*discordgo.Emoji, error) {
 	url := fmt.Sprintf(discordEmojiURL, id)
 	resp, err := http.Get(url)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("failed to HTTP GET emoji data: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("http status %s", resp.Status)
+		return nil, fmt.Errorf("HTTP status on GET emoji data was not 200: %d", resp.StatusCode)
 	}
-	// emoji, err := s.GuildEmojiCreate()
-	return "", nil
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read emoji data: %w", err)
+	}
+
+	encoded := fmt.Sprintf("data:image/png;base64,%s", base64.StdEncoding.EncodeToString(data))
+	params := discordgo.EmojiParams{Name: name, Image: encoded}
+	return s.GuildEmojiCreate(guildID, &params)
 }
